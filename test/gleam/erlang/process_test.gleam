@@ -1,6 +1,6 @@
 import gleam/dynamic.{DecodeError}
 import gleam/erlang/atom
-import gleam/erlang/process.{ProcessDown}
+import gleam/erlang/process.{NamedDestination, PidDestination, ProcessDown}
 import gleam/float
 import gleam/function
 import gleam/int
@@ -13,7 +13,12 @@ pub fn self_test() {
   let assert True = pid == process.self()
   let assert False = pid == process.start(fn() { Nil }, linked: True)
 
-  process.start(fn() { process.send(subject, process.self()) }, linked: True)
+  process.start(
+    fn() {
+      let _ = process.send(subject, process.self())
+    },
+    linked: True,
+  )
   let assert Ok(child_pid) = process.receive(subject, 5)
   let assert True = child_pid != process.self()
 }
@@ -25,20 +30,27 @@ pub fn sleep_test() {
 
 pub fn subject_owner_test() {
   let subject = process.new_subject()
-  let assert True = process.subject_owner(subject) == process.self()
+  let assert True =
+    process.subject_owner(subject) == PidDestination(process.self())
+
+  let name = atom.create_from_string("foo")
+
+  let assert Ok(subject) = process.new_named_subject(name)
+  let assert True = process.subject_owner(subject) == NamedDestination(name)
+  let _ = process.unregister(name)
 }
 
 pub fn receive_test() {
   let subject = process.new_subject()
 
   // Send message from self
-  process.send(subject, 0)
+  let _ = process.send(subject, 0)
 
   // Send message from another process
   process.start(
     fn() {
-      process.send(subject, 1)
-      process.send(subject, 2)
+      let _ = process.send(subject, 1)
+      let _ = process.send(subject, 2)
     },
     linked: True,
   )
@@ -67,9 +79,9 @@ pub fn selector_test() {
   let subject2 = process.new_subject()
   let subject3 = process.new_subject()
 
-  process.send(subject1, "1")
-  process.send(subject2, 2)
-  process.send(subject3, 3.0)
+  let _ = process.send(subject1, "1")
+  let _ = process.send(subject2, 2)
+  let _ = process.send(subject3, 3.0)
 
   let selector =
     process.new_selector()
@@ -83,8 +95,8 @@ pub fn selector_test() {
   let assert Error(Nil) = process.select(selector, 0)
 
   // More messages for subjects 2 and 3
-  process.send(subject2, 2)
-  process.send(subject3, 3.0)
+  let _ = process.send(subject2, 2)
+  let _ = process.send(subject3, 3.0)
 
   // Include subject 1 also
   let selector = process.selecting(selector, subject1, fn(x) { x })
@@ -102,7 +114,7 @@ pub fn monitor_test() {
   let pid =
     process.start(linked: False, running: fn() {
       let subject = process.new_subject()
-      process.send(parent_subject, subject)
+      let _ = process.send(parent_subject, subject)
       // Wait for the parent to send a message before exiting
       process.receive(subject, 150)
     })
@@ -118,7 +130,7 @@ pub fn monitor_test() {
 
   // Shutdown child to trigger monitor
   let assert Ok(child_subject) = process.receive(parent_subject, 50)
-  process.send(child_subject, Nil)
+  let _ = process.send(child_subject, Nil)
 
   // We get a process down message!
   let assert Ok(ProcessDown(downed_pid, _reason)) = process.select(selector, 50)
@@ -132,7 +144,7 @@ pub fn demonitor_test() {
   let pid =
     process.start(linked: False, running: fn() {
       let subject = process.new_subject()
-      process.send(parent_subject, subject)
+      let _ = process.send(parent_subject, subject)
       // Wait for the parent to send a message before exiting
       process.receive(subject, 150)
     })
@@ -145,7 +157,7 @@ pub fn demonitor_test() {
 
   // Shutdown child to trigger monitor
   let assert Ok(child_subject) = process.receive(parent_subject, 50)
-  process.send(child_subject, Nil)
+  let _ = process.send(child_subject, Nil)
 
   // Demonitor the child
   process.demonitor_process(monitor)
@@ -160,11 +172,11 @@ pub fn try_call_test() {
   process.start(linked: True, running: fn() {
     // Send the child subject to the parent so it can call the child
     let child_subject = process.new_subject()
-    process.send(parent_subject, child_subject)
+    let _ = process.send(parent_subject, child_subject)
     // Wait for the subject to be messaged
     let assert Ok(#(x, reply)) = process.receive(child_subject, 50)
     // Reply
-    process.send(reply, x + 1)
+    let _ = process.send(reply, x + 1)
   })
 
   let assert Ok(call_subject) = process.receive(parent_subject, 50)
@@ -180,7 +192,7 @@ pub fn try_call_timeout_test() {
   process.start(linked: True, running: fn() {
     // Send the call subject to the parent
     let child_subject = process.new_subject()
-    process.send(parent_subject, child_subject)
+    let _ = process.send(parent_subject, child_subject)
     // Wait for the subject to be called
     let assert Ok(_) = process.receive(child_subject, 50)
     // Never reply
@@ -200,11 +212,11 @@ pub fn call_test() {
   process.start(linked: True, running: fn() {
     // Send the child subject to the parent so it can call the child
     let child_subject = process.new_subject()
-    process.send(parent_subject, child_subject)
+    let _ = process.send(parent_subject, child_subject)
     // Wait for the subject to be messaged
     let assert Ok(#(x, reply)) = process.receive(child_subject, 50)
     // Reply
-    process.send(reply, x + 1)
+    let _ = process.send(reply, x + 1)
   })
 
   let assert Ok(call_subject) = process.receive(parent_subject, 50)
@@ -458,7 +470,7 @@ pub fn trap_exit_test() {
 
 pub fn select_forever_test() {
   let subject = process.new_subject()
-  process.send(subject, 1)
+  let _ = process.send(subject, 1)
 
   let assert 1 =
     process.new_selector()
@@ -469,8 +481,8 @@ pub fn select_forever_test() {
 pub fn map_selector_test() {
   let subject1 = process.new_subject()
   let subject2 = process.new_subject()
-  process.send(subject1, 1)
-  process.send(subject2, 2.0)
+  let _ = process.send(subject1, 1)
+  let _ = process.send(subject2, 2.0)
 
   let selector =
     process.new_selector()
@@ -485,8 +497,8 @@ pub fn map_selector_test() {
 pub fn merge_selector_test() {
   let subject1 = process.new_subject()
   let subject2 = process.new_subject()
-  process.send(subject1, 1)
-  process.send(subject2, 2)
+  let _ = process.send(subject1, 1)
+  let _ = process.send(subject2, 2)
 
   let selector =
     process.new_selector()
@@ -518,9 +530,9 @@ pub fn selecting_trapped_exits_test() {
 
 pub fn flush_messages_test() {
   let subject = process.new_subject()
-  process.send(subject, 1)
-  process.send(subject, 2)
-  process.send(subject, 3)
+  let _ = process.send(subject, 1)
+  let _ = process.send(subject, 2)
+  let _ = process.send(subject, 3)
   process.flush_messages()
   let assert Error(Nil) = process.receive(subject, 0)
 }

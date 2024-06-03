@@ -6,7 +6,7 @@
     new_selector/0, link/1, insert_selector_handler/3, select/1, select/2,
     trap_exits/1, map_selector/2, merge_selector/2, flush_messages/0,
     priv_directory/1, connect_node/1, register_process/2, unregister_process/1,
-    process_named/1, identity/1, pid_from_dynamic/1
+    process_named/1, identity/1, pid_from_dynamic/1, subject_owner_send/2
 ]).
 
 -spec atom_from_string(binary()) -> {ok, atom()} | {error, atom_not_loaded}.
@@ -189,6 +189,17 @@ process_named(Name) ->
     case erlang:whereis(Name) of
         Pid when is_pid(Pid) -> {ok, Pid};
         _ -> {error, nil}
+    end.
+
+subject_owner_send(Subject, Message) ->
+    SubjectDestination = element(2, Subject),
+    Tag = element(3, Subject),
+    Dest = element(2, SubjectDestination),
+    try
+        erlang:send(Dest, {Tag, Message}),
+        {ok, Message}
+    catch
+        error:badarg ->  {error, nil}
     end.
 
 identity(X) ->

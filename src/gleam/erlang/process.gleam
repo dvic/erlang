@@ -1,6 +1,7 @@
 import gleam/dynamic.{type DecodeErrors, type Dynamic}
 import gleam/erlang.{type Reference}
 import gleam/erlang/atom.{type Atom}
+import gleam/result
 import gleam/string
 
 /// A `Pid` (or Process identifier) is a reference to an Erlang process. Each
@@ -62,26 +63,47 @@ fn spawn_link(a: fn() -> anything) -> Pid
 /// ```
 ///
 pub opaque type Subject(message) {
-  Subject(owner: Pid, tag: Reference)
+  Subject(destination: SubjectOwner, tag: Reference)
+}
+
+pub type SubjectOwner {
+  PidDestination(Pid)
+  NamedDestination(Atom)
 }
 
 /// Create a new `Subject` owned by the current process.
 ///
 pub fn new_subject() -> Subject(message) {
-  Subject(owner: self(), tag: erlang.make_reference())
+  Subject(destination: PidDestination(self()), tag: erlang.make_reference())
 }
 
-/// Get the owner process for a `Subject`. This is the process that created the
-/// `Subject` and will receive messages sent with it.
+/// Create a new `Subject` owned by the current process and registered with
+/// the given name. This function may fail for the same reasons as `register/2`.
 ///
-pub fn subject_owner(subject: Subject(message)) -> Pid {
-  subject.owner
+pub fn new_named_subject(name: Atom) -> Result(Subject(message), Nil) {
+  let register_result = register(self(), name)
+  result.map(register_result, fn(_) {
+    Subject(destination: NamedDestination(name), tag: erlang.make_reference())
+  })
 }
 
-type DoNotLeak
+/// Get the destination for a `Subject`. This is either the pid of the
+/// process that created the `Subject` or the name that was used to register
+/// the subject.
+///
+pub fn subject_owner(subject: Subject(message)) -> SubjectOwner {
+  subject.destination
+}
 
-@external(erlang, "erlang", "send")
-fn raw_send(a: Pid, b: message) -> DoNotLeak
+/// Gets the pid of a subject owner. In case of a non-named subject
+/// the pid that created the proces is returned. In case of a named subject,
+/// the name is resolved using `named/1`.
+pub fn resolve_pid(subject_owner: SubjectOwner) -> Result(Pid, Nil) {
+  case subject_owner {
+    PidDestination(pid) -> Ok(pid)
+    NamedDestination(name) -> named(name)
+  }
+}
 
 /// Send a message to a process using a `Subject`. The message must be of the
 /// type that the `Subject` accepts.
@@ -89,6 +111,10 @@ fn raw_send(a: Pid, b: message) -> DoNotLeak
 /// This function does not wait for the `Subject` owner process to call the
 /// `receive` function, instead it returns once the message has been placed in
 /// the process' mailbox.
+///
+/// An error is only returned if the subject is a registered one but there is no
+/// corresponding process is not alive anymore.
+///
 ///
 /// # Ordering
 ///
@@ -107,10 +133,8 @@ fn raw_send(a: Pid, b: message) -> DoNotLeak
 /// send(subject, "Hello, Joe!")
 /// ```
 ///
-pub fn send(subject: Subject(message), message: message) -> Nil {
-  raw_send(subject.owner, #(subject.tag, message))
-  Nil
-}
+@external(erlang, "gleam_erlang_ffi", "subject_owner_send")
+pub fn send(subject: Subject(message), message: message) -> Result(message, Nil)
 
 /// Receive a message that has been sent to current process using the `Subject`.
 ///
@@ -482,6 +506,9 @@ type ProcessMonitorFlag {
 @external(erlang, "erlang", "monitor")
 fn erlang_monitor_process(a: ProcessMonitorFlag, b: Pid) -> Reference
 
+@external(erlang, "erlang", "monitor")
+fn erlang_monitor_named_process(a: ProcessMonitorFlag, b: Atom) -> Reference
+
 pub opaque type ProcessMonitor {
   ProcessMonitor(tag: Reference)
 }
@@ -560,10 +587,16 @@ pub fn try_call(
 
   // Monitor the callee process so we can tell if it goes down (meaning we
   // won't get a reply)
-  let monitor = monitor_process(subject_owner(subject))
+  let monitor = case subject.destination {
+    PidDestination(pid) ->
+      Process |> erlang_monitor_process(pid) |> ProcessMonitor
+    NamedDestination(name) ->
+      Process |> erlang_monitor_named_process(name) |> ProcessMonitor
+  }
 
   // Send the request to the process over the channel
-  send(subject, make_request(reply_subject))
+  // we ignore any send errors because they will be caught by the monitor
+  let _ = send(subject, make_request(reply_subject))
 
   // Await a reply or handle failure modes (timeout, process down, etc)
   let result =
@@ -626,12 +659,19 @@ pub fn unlink(pid: Pid) -> Nil {
 pub type Timer
 
 @external(erlang, "erlang", "send_after")
-fn erlang_send_after(a: Int, b: Pid, c: msg) -> Timer
+fn erlang_pid_send_after(a: Int, b: Pid, c: msg) -> Timer
+
+@external(erlang, "erlang", "send_after")
+fn erlang_named_send_after(a: Int, b: Atom, c: msg) -> Timer
 
 /// Send a message over a channel after a specified number of milliseconds.
 ///
 pub fn send_after(subject: Subject(msg), delay: Int, message: msg) -> Timer {
-  erlang_send_after(delay, subject.owner, #(subject.tag, message))
+  let payload = #(subject.tag, message)
+  case subject.destination {
+    PidDestination(pid) -> erlang_pid_send_after(delay, pid, payload)
+    NamedDestination(name) -> erlang_named_send_after(delay, name, payload)
+  }
 }
 
 @external(erlang, "erlang", "cancel_timer")
